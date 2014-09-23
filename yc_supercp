@@ -29,7 +29,8 @@
  *****************************************************************************/
 
 
-error_reporting(E_ERROR | E_WARNING);
+//error_reporting(E_ERROR | E_WARNING);
+error_reporting(E_ALL);
 
 
 define('SUPERCP_UPDATED',	"20 Sep 2014");
@@ -345,6 +346,9 @@ function yc_snmpwalk($target,$cstring,$base_oid="",$version="2c") {
 
 spl_autoload_register();
 
+define("YCSP_CREG_STR",		1);		// $callback is a string with the functon name
+define("YCSP_CREG_ARR",		2);		// $callback is an array with the class/function names
+define("YCSP_CREG_OBJTUP",	4);		// $callback is an object/method tuple
 
 class ycSuperCP {
 	public $run = false;
@@ -427,7 +431,11 @@ class ycSuperCP {
 
 	public function command_invoke($cmdname,$args) {
 		if(isset($this->cdex[$cmdname])) {
-			return $this->cdex[$cmdname]['callback']($this,$args);
+			if($this->cdex[$cmdname]['flags'] & YCSP_CREG_OBJTUP || $this->cdex[$cmdname]['flags'] & YCSP_CREG_STR || $this->cdex[$cmdname]['flags'] & YCSP_CREG_ARR) {
+				return call_user_func_array($this->cdex[$cmdname]['callback'],Array(&$this,$args));
+			} else {
+				return $this->cdex[$cmdname]['callback']($this,$args);
+			}
 		} else {
 			zlogthis("Command `$cmdname` not found!", LL_WARNING);
 			return false;
@@ -585,20 +593,20 @@ define("YCGETS_UNK",	32767);
 
 class ycConnect {
 
-	const private $cstatdex = Array(
-						YCGETS_NR => Array("NOTREADY", "not ready",
-												"Connection parameters have not been initialized."),
-						YCGETS_NC => Array("READY", "ready, not connected",
-												"Connection ready, parameters set, but not yet connected."),
-						YCGETS_OK => Array("OK", "connected",
-												"Connected to host. Status OK."),
-						YCGETS_DC => Array("DISCONNECTED", "disconnected; connection closed",
-												"Disconnected; connection closed gracefully by client."),
-						YCGETS_CONNERR => Array("ERROR", "connection error",
-												"Error or timeout in connection; disconnected"),
-						YCGETS_UNK => Array("UNKERR", "unknown error",
-												"Unknown error or exception has occurred.")
-					);
+	private $cstatdex = Array(
+					YCGETS_NR => Array("NOTREADY", "not ready",
+											"Connection parameters have not been initialized."),
+					YCGETS_NC => Array("READY", "ready, not connected",
+											"Connection ready, parameters set, but not yet connected."),
+					YCGETS_OK => Array("OK", "connected",
+											"Connected to host. Status OK."),
+					YCGETS_DC => Array("DISCONNECTED", "disconnected; connection closed",
+											"Disconnected; connection closed gracefully by client."),
+					YCGETS_CONNERR => Array("ERROR", "connection error",
+											"Error or timeout in connection; disconnected"),
+					YCGETS_UNK => Array("UNKERR", "unknown error",
+											"Unknown error or exception has occurred.")
+			);
 
 	private $hostname;
 	private $port;
@@ -607,7 +615,6 @@ class ycConnect {
 	private $status;
 	private $shand;
 	private $cstat;
-	private $pubkey_path;
 
 	/**************************************************************************
 	 * Connection and session setup/handling using the libssh2 module in PHP.
@@ -616,7 +623,10 @@ class ycConnect {
 	 * Ported over from the ycget script and adapted into a class
 	 **************************************************************************/
 
-	private function ssh2_genpubkey($pkname) {
+	private function ssh2_genpubkey($pkname=false) {
+
+		if($pkname === false) $pkname = $this->auth['priv'];
+
 		// generate random filename in temp dir
 		$xfnout = tempnam("/tmp","ycpubk");
 
@@ -631,7 +641,7 @@ class ycConnect {
 
 		chmod($xfnout, 0600);
 
-		$this->pubkey_path = $xfnout;
+		$this->auth['pub'] = $xfnout;
 
 		return true;
 	}
@@ -665,7 +675,7 @@ class ycConnect {
 				ANSI_WHT."\tRPath    ".ANSI_YEL.$xpath."\n".
 				ANSI_WHT."\tUser     ".ANSI_YEL.$aauth['user']."\n".
 				ANSI_WHT."\tAuth     ".ANSI_YEL.$aauth['type']."\n".ANSI_OFF.
-				(($aauth['type'] == 'pub') ? ANSI_WHT."\tIdentity ".ANSI_YEL.$aauth['priv']."\n" : ""),
+				ANSI_WHT."\tIdentity ".ANSI_YEL.$aauth['priv']."\n".ANSI_OFF,
 				LL_DEBUG);
 
 		$this->hostname = $xhost;
@@ -679,6 +689,16 @@ class ycConnect {
 	}
 
 	private function ycc_ssh2_connect() {
+
+		zlogthis("Attempting connection:\n".
+				ANSI_WHT."\thostname     ".ANSI_YEL.$this->hostname."\n".ANSI_OFF.
+				ANSI_WHT."\tport         ".ANSI_YEL.$this->port."\n".ANSI_OFF.
+				ANSI_WHT."\tauth.user    '".ANSI_YEL.$this->auth['user']."'\n".ANSI_OFF.
+				ANSI_WHT."\tauth.type    '".ANSI_YEL.$this->auth['type']."'\n".ANSI_OFF.
+				ANSI_WHT."\tauth.priv    '".ANSI_YEL.$this->auth['priv']."'\n".ANSI_OFF.
+				ANSI_WHT."\tauth.pub     '".ANSI_YEL.$this->auth['pub']."'\n".ANSI_OFF.
+				ANSI_WHT."\tauth.pass    '".ANSI_YEL.$this->auth['pass']."'\n".ANSI_OFF,
+				LL_MOREINFO);
 
 		// Establish connection to target remote host
 		// TODO: Callback function is called statically, afaik-- therefore, the callee will have no context
@@ -855,22 +875,23 @@ class ycConnect {
 		return $stdoutx;
 	}
 
-	static public function __construct(&$context) {
+	public function __construct(&$context) {
 		$this->cstat = YCGETS_NR;
 		zlogthis("new ycConnect instance created.", LL_DEBUG);
 		zlogthis("Registering callbacks...", LL_DEBUG);
 
-		$context->command_register('connect', Array("userhost"), "Connect to remote host", $this->connect } );
-		$context->command_register('disconnect', Array(), "Disconnect from remote host", $this->disconnect } );
+		$context->command_register('connect', Array("userhost"), "Connect to remote host", Array($this, "connect"), YCSP_CREG_OBJTUP);
+		$context->command_register('disconnect', Array(), "Disconnect from remote host", Array($this, "disconnect"), YCSP_CREG_OBJTUP);
 
 		zlogthis("Adding test server. FIXME ***************** <<< ", LL_DEBUG);
 		$this->add_server("minorin.ycnrg.org",Array('type' => "pubkey", 'user' => "jacob", 'key' => "/home/jacob/.ssh/ycnrg-minorin-jacob"));
 
 	}
 
-	static public function connect(&$context,$args) {
+	public function connect(&$context,$args) {
 
-		$this->connect_ssh($minorin);
+		$this->ssh2_genpubkey();
+		$this->ycc_ssh2_connect();
 
 		/*
 		ycsh_exec($minorin,"/bin/touch /home/jacob/yappa-".time());
@@ -881,10 +902,9 @@ class ycConnect {
 
 	}
 
-	static public function disconnect(&$connect,$args) {
-		ycget_disconnect_ssh($minorin);
+	public function disconnect(&$connect,$args) {
+		$this->ycc_ssh2_disconnect();
 	}
-
 
 }
 
@@ -897,6 +917,7 @@ yc_showinfo();
 $status = new ycSuperCP();
 ycSuperCPBase::init($status);
 $xprompt = new ycSuperPrompt($status);
+$xcon = new ycConnect($status);
 
 $status->config_parse_ff();
 //$status->command_list();
