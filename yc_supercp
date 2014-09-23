@@ -352,9 +352,16 @@ define("YCSP_CREG_OBJTUP",	4);		// $callback is an object/method tuple
 
 class ycSuperCP {
 	public $run = false;
+
 	private $configDex = Array();
+
+	// command index
 	private $cdex = Array();
 	private $cxct = 0;
+
+	// handler index
+	private $hdex = Array();
+	private $hxct = 0;
 
 	public function config_parse_ff($cfgfile=NULL) {
 		if(!$cfgfile) $cfgfile = $GLOBALS['user_rc_path'];
@@ -440,6 +447,36 @@ class ycSuperCP {
 			zlogthis("Command `$cmdname` not found!", LL_WARNING);
 			return false;
 		}
+	}
+
+	public function register_handler(&$hhand, $nsname, $hstat=0, $flags=0) {
+		$hclass = get_class($hhand);
+		zlogthis("registering handler: ".ANSI_GRN.$nsname.ANSI_OFF." --> ".ANSI_CYN.$hclass.ANSI_OFF, LL_DEBUG);
+		if(isset($hdex[$nsname])) {
+			zlogthis(ANSI_RED."Handler for this namespace already registered".ANSI_OFF." by ".ANSI_MAG.$hdex[$nsname]['class'].ANSI_OFF, LL_WARNING);
+			zlogthis("Previous handler will be overridden with new one.", LL_WARNING);
+			unset($hdex[$nsname]);
+		}
+
+		$hdex[$nsname] = Array(
+								'class' => $hclass,
+								'obj' => $hhand,
+								'status' => $hstat
+							  );
+	}
+
+	public function unregister_handler(&$hhand, $nsname) {
+		$hclass = get_class($hhand);
+		zlogthis("Unregistering handler: ".ANSI_GRN.$nsname.ANSI_OFF." --> ".ANSI_CYN.$hclass.ANSI_OFF, LL_DEBUG);
+		if(isset($hdex[$nsname])) {
+			if($hdex[$nsname]['class'] == $hclass) {
+				unset($hdex[$nsname]);
+				zlogthis("Deregistered successfully", LL_DEBUG);
+			}
+		} else {
+			zlogthis("Was not registered. Nothing done.", LL_DEBUG);
+		}
+
 	}
 
 	public function command_list() {
@@ -584,12 +621,14 @@ class ycSuperCPBase {
 }
 
 
-define("YCGETS_NR",		0);
-define("YCGETS_NC",		1);
-define("YCGETS_OK",		2);
-define("YCGETS_DC",		11);
-define("YCGETS_CONERR",	101);
-define("YCGETS_UNK",	32767);
+define("YCGETS_NR",			0);
+define("YCGETS_NC",			1);
+define("YCGETS_OK",			2);
+define("YCGETS_DC",			11);
+define("YCGETS_CLOSE",		61);
+define("YCGETS_CONERR",		101);
+define("YCGETS_AUTHFAIL",	102);
+define("YCGETS_UNK",		32767);
 
 class ycConnect {
 
@@ -602,8 +641,12 @@ class ycConnect {
 											"Connected to host. Status OK."),
 					YCGETS_DC => Array("DISCONNECTED", "disconnected; connection closed",
 											"Disconnected; connection closed gracefully by client."),
+					YCGETS_DC => Array("CLOSE", "closing connection",
+											"A request to close the session has been initiated, but not completed."),
 					YCGETS_CONNERR => Array("ERROR", "connection error",
 											"Error or timeout in connection; disconnected"),
+					YCGETS_AUTHFAIL => Array("AUTHFAIL", "authentication failed",
+											"Authentication failed while attempting to connect"),
 					YCGETS_UNK => Array("UNKERR", "unknown error",
 											"Unknown error or exception has occurred.")
 			);
@@ -655,8 +698,7 @@ class ycConnect {
 				$aauth = Array('type' => "password", 'user' => $xauth['user'], 'pass' => $xauth['pass']);
 			} else if(isset($xauth['type']) && $xauth['type'] == "pubkey") {
 				$aapriv = realpath($xauth['key']);
-				$aapub = $this->ssh2_genpubkey($aapriv);
-				$aauth = Array('type' => "pubkey", 'user' => $xauth['user'], 'pub' => $aapub, 'priv' => $aapriv);
+				$aauth = Array('type' => "pubkey", 'user' => $xauth['user'], 'pub' => NULL, 'priv' => $aapriv);
 			} else if(!isset($xauth['type']) && isset($xauth['user']) && isset($xauth['pass'])) {
 				$aauth = Array('type' => "password", 'user' => $xauth['user'], 'pass' => $xauth['pass']);
 			}
@@ -675,7 +717,8 @@ class ycConnect {
 				ANSI_WHT."\tRPath    ".ANSI_YEL.$xpath."\n".
 				ANSI_WHT."\tUser     ".ANSI_YEL.$aauth['user']."\n".
 				ANSI_WHT."\tAuth     ".ANSI_YEL.$aauth['type']."\n".ANSI_OFF.
-				ANSI_WHT."\tIdentity ".ANSI_YEL.$aauth['priv']."\n".ANSI_OFF,
+				ANSI_WHT."\tIdentity ".ANSI_YEL.$aauth['priv']."\n".ANSI_OFF.
+				ANSI_WHT."\tPubkey   ".ANSI_YEL.$aauth['pub']."\n".ANSI_OFF,
 				LL_DEBUG);
 
 		$this->hostname = $xhost;
@@ -683,6 +726,7 @@ class ycConnect {
 		$this->auth = $aauth;
 		$this->rpath_init = $xpath;
 		$this->status = 'disconnected';
+		$this->cstat = YCGETS_NC;
 		$this->shand = NULL;
 
 		return true;
@@ -690,6 +734,7 @@ class ycConnect {
 
 	private function ycc_ssh2_connect() {
 
+		/*
 		zlogthis("Attempting connection:\n".
 				ANSI_WHT."\thostname     ".ANSI_YEL.$this->hostname."\n".ANSI_OFF.
 				ANSI_WHT."\tport         ".ANSI_YEL.$this->port."\n".ANSI_OFF.
@@ -699,6 +744,7 @@ class ycConnect {
 				ANSI_WHT."\tauth.pub     '".ANSI_YEL.$this->auth['pub']."'\n".ANSI_OFF.
 				ANSI_WHT."\tauth.pass    '".ANSI_YEL.$this->auth['pass']."'\n".ANSI_OFF,
 				LL_MOREINFO);
+		*/
 
 		// Establish connection to target remote host
 		// TODO: Callback function is called statically, afaik-- therefore, the callee will have no context
@@ -706,10 +752,12 @@ class ycConnect {
 		if(($this->shand = ssh2_connect($this->hostname,$this->port,NULL,Array('disconnect' => 'ycConnect::ycc_ssh2cb_disconnect'))) === false) {
 			zlogthis(ANSI_RED."Connection failed!".ANSI_OFF." [hostname = ".ANSI_YEL.$this->hostname.ANSI_OFF.", port = ".ANSI_BLU.$this->port.ANSI_OFF."]",LL_ERROR);
 			$this->status = 'error/connect_fail';
+			$this->cstat = YCGETS_CONERR;
 			return false;
 		} else {
 			zlogthis("Connection established to ".ANSI_YEL.$this->hostname.ANSI_OFF.":".ANSI_BLU.$this->port.ANSI_OFF." OK",LL_INFO);
 			$this->status = 'connected';
+			$this->cstat = YCGETS_OK;
 		}
 
 
@@ -751,10 +799,12 @@ class ycConnect {
 		if($a_ok) {
 			zlogthis("Authentication successful! ^_^ [type = $atype, user = ".$this->auth['user']."]",LL_INFO);
 			$this->status = 'connected/auth_ok';
+			$this->cstat = YCGETS_OK;
 			return true;
 		} else {
 			zlogthis("Authentication FAILED! ;_; [type = $atype, user = ".$this->auth['user']."]",LL_ERROR);
 			$this->status = 'error/auth_fail';
+			$this->cstat = YCGETS_AUTHFAIL;
 			return false;
 		}
 	}
@@ -766,8 +816,9 @@ class ycConnect {
 
 
 	private function ycc_ssh2_disconnect(&$rtarget) {
-		if($this->status == 'connected/auth_ok') {
-			$this->status == 'closing';
+		if($this->status == 'connected/auth_ok' || $this->cstat == YCGETS_OK) {
+			$this->status = 'closing';
+			$this->cstat = YCGETS_CLOSE;
 			ssh2_exec($this->shand,"exit");
 		}
 
@@ -888,10 +939,18 @@ class ycConnect {
 
 	}
 
+	public function __destruct() {
+		if($this->cstat == YCGETS_OK) {
+			$this->ycc_ssh2_disconnect();
+		}
+		zlogthis("ycConnect instance destroyed", LL_DEBUG);
+	}
+
 	public function connect(&$context,$args) {
 
 		$this->ssh2_genpubkey();
 		$this->ycc_ssh2_connect();
+		$context->register_handler($this, "connect", 1);
 
 		/*
 		ycsh_exec($minorin,"/bin/touch /home/jacob/yappa-".time());
@@ -902,8 +961,9 @@ class ycConnect {
 
 	}
 
-	public function disconnect(&$connect,$args) {
+	public function disconnect(&$context,$args) {
 		$this->ycc_ssh2_disconnect();
+		$context->unregister_handler($this, "connect");
 	}
 
 }
