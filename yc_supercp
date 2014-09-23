@@ -1,0 +1,908 @@
+#!/usr/bin/php
+<?php
+/**
+ **%%YCDOC*********************************************************************
+ **%%vim: set modelines=35:
+ *
+ * yc_supercp
+ *
+ * Copyright (c) 2013-2014 Jacob Hipps / Neo-Retro Group <jacob@ycnrg.org>
+ * https://ycnrg.org/
+ * https://neoretro.net/
+ *
+ * Started: 19 Sep 2014
+ * Updated: 22 Sep 2014
+ * Revision: r1
+ *
+ * @package		neoretro\yellowcrescent
+ * @subpackage	yc_supercp
+ * @category	util,shell_util
+ * @fullpkg		neoretro.ycnrg.supercp
+ * @version		0.01.0
+ * @author		Jacob Hipps - jacob@ycnrg.org
+ * @copyright	Copyright (c) 2014 Jacob Hipps/Neo-Retro Group
+ * @license		GNU GPLv3 - http://www.gnu.org/licenses/gpl.html
+ * @param 		vim: set ts=4 sw=4 noexpandtab syntax=php:
+ *
+ * @depends		php:curl,php:readline,pecl:ssh2,pecl:xattr,ssh-keygen,?rhash
+ *
+ *****************************************************************************/
+
+
+error_reporting(E_ERROR | E_WARNING);
+
+
+define('SUPERCP_UPDATED',	"20 Sep 2014");
+define('SUPERCP_REV',		"r1");
+
+// Defaults
+define('USERRC_PATH', "~/.ycsuperc");
+
+
+// Log levels
+define('LL_SILENT',		-1);
+define('LL_ERROR',		0);
+define('LL_WARNING',	1);
+define('LL_PROMPT',		2);
+define('LL_NOTICE',		3);
+define('LL_INFO',		4);
+define('LL_MOREINFO',	5);
+define('LL_VERBOSE',	6);
+define('LL_DEBUG',		9);
+
+$loglvl_strtab = Array(0 => "error", 1 => "warning", 2 => "prompt",
+					   3 => "notice", 4 => "info", 5 => "moreinfo",
+					   6 => "verbose", 9 => "debug");
+
+// Default verbosity level
+$verbose_level = LL_DEBUG; // (0 = Errors only, 9 = Everything) See above
+
+// Set default path
+$user_rc_path = USERRC_PATH;
+
+function ycxdef($cn,$cv,$icase=true) {
+	$GLOBALS[$cn] = $cv;
+	$GLOBALS['_YC']['_'][$cn] =& $GLOBALS[$cn];
+	define($cn,$cv,$icase);
+}
+
+function ycgdref($cn,&$cr) {
+	$GLOBALS['_YC'][$cn] =& $cr;
+}
+
+function logthis($instr,$level=LL_INFO) {
+	global $verbose_level;
+	if($level <= $verbose_level) echo $instr;
+}
+
+function zlogthis($instr,$level=LL_INFO) {
+	global $verbose_level;
+	global $loglvl_strtab;
+	if($level <= $verbose_level) {
+		$dtracer = debug_backtrace();
+		$dcaller = $dtracer[1];
+		if(isset($dcaller['class'])) {
+			$xcontext = $dcaller['class'].$dcaller['type'].$dcaller['function'];
+		} else {
+			$xcontext = $dcaller['function'];
+		}
+		printf("[".ANSI_GRN."%s".ANSI_OFF." @ ".ANSI_GRN."line %d".ANSI_OFF."] <".ANSI_RED."%s".ANSI_OFF."> %s\n",$xcontext,$dcaller['line'],$loglvl_strtab[$level], $instr);
+	}
+}
+
+$GLOBALS['_YC']['zout'] = fopen('php://stdout','w');
+
+ycxdef("ANSI_OFF",		"\033[m");
+ycxdef("ANSI_HI",		"\033[1m");
+ycxdef("ANSI_BLK",		"\033[30m");
+ycxdef("ANSI_RED",		"\033[31m");
+ycxdef("ANSI_GRN",		"\033[32m");
+ycxdef("ANSI_YEL",		"\033[33m");
+ycxdef("ANSI_BLU",		"\033[34m");
+ycxdef("ANSI_MAG",		"\033[35m");
+ycxdef("ANSI_CYN",		"\033[36m");
+ycxdef("ANSI_WHT",		"\033[37m");
+ycxdef("ANSI_B4",		"\033[4D");
+ycxdef("ANSI_CLRSCR",	"\033[2J");
+ycxdef("ANSI_CLRLINE",	"\033[K");
+ycxdef("ANSI_HOME",		"\033[0;0f");
+ycxdef("ANSI_XCLEAR",	ANSI_CLRSCR.ANSI_CLRLINE.ANSI_HOME);
+
+
+define("YCSUP_CFLAG_DISABLED",		(1<<8));
+
+define('YCFIG_CENTER',	1);
+function format_figlet($figtree,$leading=0,$flags=0) {
+	$center = ($flags & YCFIG_CENTER);
+
+	foreach($figtree as $fi => $flimb) {
+		if($center) $rebt .= str_pad($flimb,$leading," ",STR_PAD_BOTH)."\n";
+		else $rebt .= str_pad("",$leading," ").$flimb."\n";
+	}
+
+	return $rebt;
+}
+
+function yc_showinfo() {
+
+	$term_width = 80;
+	$babytab = "\t\t";
+	$figlog =	Array(
+					'   _______  ______  ___  ______________  ',
+					'  / ___/ / / / __ \/ _ \/ ___/ ___/ __ \ ',
+					' (__  ) /_/ / /_/ /  __/ /  / /__/ /_/ / ',
+					'/____/\__,_/ .___/\___/_/   \___/ .___/  ',
+					'          /_/                  /_/       '
+				);
+
+	$figtree = format_figlet($figlog,$term_width,YCFIG_CENTER);
+	$superpadz = str_pad("",$term_width,"/");
+
+	$avinfo  = "Revision ".SUPERCP_REV." / Updated ".SUPERCP_UPDATED.ANSI_OFF;
+	$avinfo .= str_pad("",16," ");
+	$avinfo .= ANSI_WHT."J. Hipps".ANSI_OFF." --- ".ANSI_GRN."https://ycnrg.org/".ANSI_OFF;
+
+	printf("\n".ANSI_MAG.$superpadz."\n\n".ANSI_CYN.$figtree."\n\n".ANSI_YEL.$avinfo."\n".ANSI_MAG.$superpadz.ANSI_OFF."\n\n");
+
+}
+
+
+function yc_exec($binx,$argvx,&$xout=NULL,$xin=NULL,&$xerr=NULL,$cwdx=NULL) {
+	if(!$cwdx) $cwdx = getcwd();
+
+	$dspec = Array(
+	               0 => array("pipe", "r"),
+	               1 => array("pipe", "w"),
+	               2 => array("pipe", "w")
+	               );
+
+	$cmdx = $binx;
+	foreach($argvx as $zopt => $zarg) {
+		$cmdx .= " ".escapeshellarg($zarg);
+	}
+	$pxp = proc_open($cmdx,$dspec,$piper,$cwdx);
+
+	// input (stdin)
+	fwrite($piper[0],$xin);
+	fclose($piper[0]);
+
+	// output (stdout)
+	$xout = stream_get_contents($piper[1]);
+	fclose($piper[1]);
+
+	// stderr
+	$xerr = stream_get_contents($piper[2]);
+	fclose($piper[2]);
+
+}
+
+function ycmi_rhash($fname) {
+
+	yc_exec('/usr/bin/rhash',Array('--crc32','--md5','--sha1','--ed2k','--printf=%C %m %h %e',$fname),$xox);
+	$xra = explode(' ',trim($xox));
+	$xout['crc32'] = $xra[0];
+	$xout['md5'] = $xra[1];
+	$xout['sha1'] = $xra[2];
+	$xout['ed2k'] = $xra[3];
+
+	return $xout;
+}
+
+function yc_xattr_enum($fpath,$use_root_context=false,$dont_reref=false) {
+	//if(yc_xattr_enabled($fpath) !== true) return Array('error' => 'UNSUPPORTED');
+
+	//$ctxflag = ($use_root_context ? XATTR_ROOT : 0) | ($dont_deref ? XATTR_DONTFOLLOW : 0);
+
+	$xlistx = xattr_list($fpath);
+	//print_r($xlistx);
+
+	if(is_array($xlistx) && count($xlistx) > 0) {
+		foreach($xlistx as $xi => $xv) {
+			$xout[$xv] = xattr_get($fpath,$xv);
+		}
+	} else {
+		$xout = Array(NULL);
+	}
+
+	return $xout;
+}
+
+
+
+
+function ycsh_hccheck(&$rtarget) {
+
+	$xstat = '\stat -c \'"%n": {"chmod": "%a","type":"%F","size":"%s","owner": [%u,"%U"], "group": [%g,"%G"],"mtime": %Y},\' *';
+
+	zlogthis("executing on remote -- `$stat_cmd`\n",LL_DEBUG);
+
+	zlogthis("** jstat = \"$jstat\"",LL_DEBUG);
+	zlogthis("** dstat = \n".print_r($dstat,true)."\n",LL_DEBUG);
+
+	return $dstat;
+}
+
+function ycsh_upinfo(&$rtarget) {
+
+	$xstat =   Array(
+						'beacon' =>		Array(
+											'cmd' => 'echo -en "'.time().'\n" >> beacon'
+										),
+						'uptime' =>		Array(
+											'cmd' => '/usr/bin/uptime',
+											'regex' => ''
+										),
+						'netxfer' =>	Array(
+											'cmd' => '/bin/cat /proc/net/dev',
+											'regex' => ''
+										),
+						'netaddr' =>	Array(
+											'cmd' => '/bin/ip addr',
+											'regex' => ''
+										),
+						'swap' =>		Array(
+											'cmd' => '/sbin/swapon -s',
+											'regex' => ''
+										),
+						'df' =>			Array(
+											'cmd' => '/bin/df -lkT --no-sync',
+											'regex' => ''
+										),
+						'dfi' =>		Array(
+											'cmd' => '/bin/df -li --no-sync',
+											'regex' => ''
+										)
+					);
+
+	foreach($xstat as $xname => $xexec) {
+		$xcmd = $xexec['cmd'];
+		zlogthis("** \"$xname\" => `$xcmd`",LL_DEBUG);
+		$xxout = ycsh_exec($rtarget,$xcmd);
+	}
+
+	//logthis("[".__FUNCTION__."] ** jstat = \"$jstat\"\n\n",LL_DEBUG);
+	//logthis("[".__FUNCTION__."] ** dstat = \n".print_r($dstat,true)."\n",LL_DEBUG);
+
+	return $dstat;
+}
+
+define("YCSNMP_TREE",		(1<<0));
+define("YCSNMP_XINFO",		(1<<1));
+define("YCSNMP_MIB",		(1<<2));
+
+function yc_snmp_parse($sdata,$flags=YCSNMP_TREE) {
+	if($flags & YCSNMP_MIB)	$lregex = '/^(?<mib_name>[^:]+)::(?<keyname>(?<rootkey>[^.\s=]+)(.(?<subkey>[^\s=:]+))?)\s*=\s*(?<vtype>[^:]+):(?<value>[^\n\r]*)$/m';
+	else $lregex = '/^\.?(?<keyname>(?<rootkey>[^.\s=]+)(.(?<subkey>[^\s=:]+))?)\s*=\s*(?<vtype>[^:]+):(?<value>[^\n\r]*)$/m';
+
+	if(!preg_match_all($lregex,$sdata,$llx,PREG_SET_ORDER)) {
+		zlogthis("Failed to parse SNMP data. Size = ".strlen($sdata)." bytes",LL_WARNING);
+		zlogthis("First 512 bytes >>>\n".substr($sdata,0,512)."\n<<<\n",LL_WARNING);
+		return false;
+	}
+
+	$rset = Array();
+	foreach($llx as $iil => $vvl) {
+		$oid_path = explode(".",$vvl['keyname']);
+		$rset[] =  Array(
+							'mib' => $vvl['mib_name'],
+							'oid' => $vvl['keyname'],
+							'path' => $oid_path,
+							'type' => $vvl['vtype'],
+							'value' => trim($vvl['value'])
+						);
+	}
+	zlogthis("Parsed ".count($rset)." key/value pairs.",LL_VERBOSE);
+
+	if(!($flags & YCSNMP_TREE)) return $rset;
+
+	zlogthis("Building SNMP tree...",LL_VERBOSE);
+
+	$tset = Array();
+	foreach($rset as $rii => $cval) {
+		// do this nasty eval() hack so that we can easily and lazily
+		// build a 'tree' of snmp values... but hey, it works!
+		// If values_only parameter is false (default is true),
+		// then an array is built which also contains the var type,
+		// MIB and full OID path
+		$xtref = "['".implode("']['",$cval['path'])."']";
+		if($flags & YCSNMP_XINFO) $evalx = "\$tset${xtref} = Array('value' => '".addslashes($cval['value'])."', 'type' => '{$cval['type']}', 'mib' => '{$cval['mib']}', 'oid' => '{$cval['oid']}');";
+		else $evalx ="\$tset${xtref} = '".addslashes($cval['value'])."';";
+		zlogthis("eval()'ing --> `$evalx`\n",LL_DEBUG);
+		eval($evalx);
+	}
+
+	zlogthis("OK! Root node has ".count($tset)." children",LL_VERBOSE);
+
+	return $tset;
+}
+
+function yc_snmpwalk($target,$cstring,$base_oid="",$version="2c") {
+
+	// Run snmpwalk and grab the output so we can parse the results
+	// The built-in SNMP module in PHP only supports SNMPv1, so we
+	// can't use it
+
+	$snmp_cmd = "/usr/bin/snmpwalk -O f -v $version -c $cstring $target $base_oid";
+	zlogthis("Executing snmpwalk with command `$snmp_cmd`",LL_VERBOSE);
+	$sraw = shell_exec($snmp_cmd);
+	zlogthis("snmpwalk returned ".strlen($sraw)." bytes.",LL_DEBUG);
+
+	// parse it and return an snmp tree
+	if(($matree = yc_snmp_parse($sraw,YCSNMP_TREE)) === false) {
+		zlogthis("Failed to retrieve SNMP list from $target:$cstring for ".($base_oid ? $base_oid : "(root)"),LL_WARNING);
+	}
+	if(!$matree) return false;
+
+	zlogthis("\$matree = ",LL_DEBUG);
+	logthis(print_r($matree,true)."\n",LL_DEBUG);
+
+	return $matree;
+}
+
+
+////////
+
+
+spl_autoload_register();
+
+
+class ycSuperCP {
+	public $run = false;
+	private $configDex = Array();
+	private $cdex = Array();
+	private $cxct = 0;
+
+	public function config_parse_ff($cfgfile=NULL) {
+		if(!$cfgfile) $cfgfile = $GLOBALS['user_rc_path'];
+		$freals = realpath($cfgfile);
+		if(!file_exists($freals)) {
+			zlogthis("File does not exist [$cfgfile]",LL_WARNING);
+			return false;
+		}
+
+		if(($indatter = file_get_contents($freals)) === false) {
+			zlogthis("Unable to read from file [$freals].",LL_WARNING);
+			return false;
+		}
+
+		return $this->config_parse($indatter);
+	}
+
+	public function config_parse($rawjson) {
+
+		$json_errdex = Array(
+			0 => Array('msg' => "JSON_ERROR_NONE", 'desc' => "No error has occurred"),
+			1 => Array('msg' => "JSON_ERROR_DEPTH", 'desc' => "The maximum stack depth has been exceeded"),
+			2 => Array('msg' => "JSON_ERROR_STATE_MISMATCH", 'desc' => "Invalid or malformed JSON"),
+			3 => Array('msg' => "JSON_ERROR_CTRL_CHAR", 'desc' => "Control character error, possibly incorrectly encoded"),
+			4 => Array('msg' => "JSON_ERROR_SYNTAX", 'desc' => "Syntax error"),
+			5 => Array('msg' => "JSON_ERROR_UTF8", 'desc' => "Malformed UTF-8 characters, possibly incorrectly encoded"),
+			6 => Array('msg' => "JSON_ERROR_RECURSION", 'desc' => "One or more recursive references in the value to be encoded"),
+			7 => Array('msg' => "JSON_ERROR_INF_OR_NAN", 'desc' => "One or more NAN or INF values in the value to be encoded"),
+			8 => Array('msg' => "JSON_ERROR_UNSUPPORTED_TYPE", 'desc' => "A value of a type that cannot be encoded was given")
+		);
+
+		zlogthis("Parsing JSON, loading into configDex",LL_DEBUG);
+
+		// Uses Seldaek's jsonlint for PHP <https://github.com/Seldaek/jsonlint>
+		// This allows us to provide more meaningful error messages
+		// if the user mucks up the config file
+
+		$configDex = json_decode($rawjson);
+		$jstat = json_last_error();
+
+		if($jstat || $configDex === false || $configDex === NULL) {
+			zlogthis("json_decode() failed. [".ANSI_MAG.$json_errdex[$jstat]['msg'].ANSI_OFF."] ".ANSI_WHT.$json_errdex[$jstat]['desc'].ANSI_OFF,LL_ERROR);
+			return false;
+		}
+
+		return true;
+	}
+
+	public function command_register($cmdname, $params, $help, $callback, $flags=0) {
+		if(!is_array($params)) {
+			zlogthis("\$params argument is not an array. Setting to zero-size array.",LL_WARNING);
+			$params = Array();
+		}
+		if(isset($this->cdex[$cmdname])) {
+			zlogthis("cmdname='$cmdname' is already registered! bailing!",LL_WARNING);
+			return false;
+		}
+		$cdxn = Array(
+					'cmd' => $cmdname,
+					'params' => $params,
+					'callback' => $callback,
+					'flags' => $flags
+				);
+		$this->cdex[$cmdname] = $cdxn;
+		$this->cxct++;
+		zlogthis("New command added OK!\n".
+				 "\t".ANSI_WHT."cmdname".ANSI_OFF.": ".ANSI_YEL."$cmdname".ANSI_OFF."  ".
+				 "  ".ANSI_WHT."flags".ANSI_OFF.": ".ANSI_YEL."$flags".ANSI_OFF."\n".
+				 "\t".ANSI_WHT."help".ANSI_OFF.": ".ANSI_YEL."".trim($help)."".ANSI_OFF."\n"
+				 ,LL_DEBUG);
+
+		return true;
+	}
+
+	public function command_invoke($cmdname,$args) {
+		if(isset($this->cdex[$cmdname])) {
+			return $this->cdex[$cmdname]['callback']($this,$args);
+		} else {
+			zlogthis("Command `$cmdname` not found!", LL_WARNING);
+			return false;
+		}
+	}
+
+	public function command_list() {
+		zlogthis("dumping \$this->cdex ...\n\n".print_r($this->cdex,true)."\n",LL_DEBUG);
+	}
+
+	public function __construct() {
+		zlogthis("new ycSuperCP instance created.", LL_DEBUG);
+		$this->run = true;
+		$this->command_register('quit', Array(), "Terminates any active processes or connections and exits.", function(&$context,$args) { exit(0); } );
+		$this->command_register('info', Array(), "Show program info", function(&$context,$args) { yc_showinfo(); } );
+	}
+
+	public function __destruct() {
+		zlogthis("ycSuperCP instance destroyed.", LL_DEBUG);
+	}
+
+}
+
+class ycSuperPrompt {
+	private $prompt;
+	private $lastPrompt;
+	private $core;
+
+	protected function prompt_set($newp) {
+		$oldie = $this->prompt;
+		$this->prompt = $newp;
+	}
+
+	protected function parse_command($xcmd) {
+		zlogthis("Got command: `".ANSI_WHT.$xcmd.ANSI_OFF."`",LL_DEBUG);
+
+		$clix = explode(" ",trim($xcmd));
+		$rcmd = (isset($clix[0]) ? $clix[0] : NULL);
+		array_shift($clix); // drop the command name off of the array
+
+		if($xcmd == NULL) {
+			//zlogthis("Must specify a command!", LL_INFO);
+			return false;
+		} else {
+			return $this->core->command_invoke($rcmd,$clix);
+		}
+
+		return false;
+	}
+
+	public function ploop() {
+		zlogthis("entering ploop.", LL_DEBUG);
+		while($this->core->run) {
+			$cline = readline($this->prompt);
+			$this->parse_command($cline);
+			readline_add_history($cline);
+		}
+		zlogthis("leaving ploop.", LL_DEBUG);
+	}
+
+	public function __construct(&$ycsuperx) {
+		zlogthis("new ycSuperPrompt instance created.", LL_DEBUG);
+		$this->core = $ycsuperx;
+		$this->prompt_set(ANSI_YEL."yc_".ANSI_MAG."supercp".ANSI_WHT."> ".ANSI_OFF);
+	}
+
+	public function __destruct() {
+		zlogthis("ycSuperPrompt instance destroyed.", LL_DEBUG);
+	}
+}
+
+class ycSuperCPBase {
+
+	static public function ycs_screate() {
+		if(($ysox = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
+			zlogthis("failed to create socket. ".ANSI_RED.socket_strerror(socket_last_error()).ANSI_OFF, LL_ERROR);
+			return false;
+		}
+		return $ysox;
+	}
+
+	static public function ycs_sconnect($socky,$ipaddr,$portnum) {
+		if(socket_connect($socky,$ipaddr,$portnum) === false) {
+			zlogthis("failed to connect. ".ANSI_RED.socket_strerror(socket_last_error()).ANSI_OFF, LL_ERROR);
+			return false;
+		}
+		return true;
+	}
+
+	static public function ycs_srecv($socky,$maxbuf=1024) {
+		$rxin = socket_recv($socky,$buffy,$maxbuf,0);
+		zlogthis("got $rxin bytes off the wire!", LL_DEBUG);
+		return $buffy;
+	}
+
+	static public function ycs_sclose($socky) {
+		socket_close($socky);
+		zlogthis("socket closed OK.", LL_DEBUG);
+	}
+
+ 	static public function init(&$context) {
+		$context->command_register('mxcheck', Array("dnsname"), "Show MX Information", function(&$context,$args) { self::mxcheck($context,$args); } );
+	}
+
+	static public function mxcheck(&$context,$args) {
+
+		$smtp_port = 25;
+
+		if(!isset($args[0])) {
+			zlogthis("missing required argument: ".ANSI_YEL.dnsname.ANSI_OFF, LL_WARNING);
+			return false;
+		} else {
+			$dnsname = $args[0];
+		}
+
+		// DNS query
+		$authns = Array();
+		$xtrarr = Array();
+		if(($rrout = dns_get_record($dnsname, DNS_MX, $authns, $xtrarr)) === false) {
+			zlogthis("failed to retrieve MX records for specified host ".ANSI_YEL.$dnsname.ANSI_OFF, LL_WARNING);
+			return false;
+		}
+
+		if(!count($rrout)) {
+			zlogthis(ANSI_MAG."No MX Records returned from DNS resolvers!".ANSI_OFF,LL_WARNING);
+			return 0;
+		}
+
+		zlogthis("got RRs from DNS server:\n\n".print_r($rrout,true),LL_DEBUG);
+
+		// attempt to connect to the MTA on the specified host
+		$mxhost = $rrout[0]['target'];
+		$mxip4 = gethostbyname($mxhost);
+		zlogthis("gethostbyname() ".ANSI_YEL.$mxhost.ANSI_OFF." --> ".ANSI_RED."$mxip4".ANSI_OFF,LL_DEBUG);
+
+		zlogthis("connecting to ".ANSI_RED.$mxip4.":".$smtp_port.ANSI_OFF,LL_DEBUG);
+		$mxsock = self::ycs_screate();
+		self::ycs_sconnect($mxsock,$mxip4,$smtp_port);
+		$mxbanner = self::ycs_srecv($mxsock);
+		self::ycs_sclose($mxsock);
+
+		zlogthis("Got MTA banner! :\n\n".ANSI_WHT.$mxbanner.ANSI_OFF,LL_DEBUG);
+
+	}
+
+}
+
+
+define("YCGETS_NR",		0);
+define("YCGETS_NC",		1);
+define("YCGETS_OK",		2);
+define("YCGETS_DC",		11);
+define("YCGETS_CONERR",	101);
+define("YCGETS_UNK",	32767);
+
+class ycConnect {
+
+	const private $cstatdex = Array(
+						YCGETS_NR => Array("NOTREADY", "not ready",
+												"Connection parameters have not been initialized."),
+						YCGETS_NC => Array("READY", "ready, not connected",
+												"Connection ready, parameters set, but not yet connected."),
+						YCGETS_OK => Array("OK", "connected",
+												"Connected to host. Status OK."),
+						YCGETS_DC => Array("DISCONNECTED", "disconnected; connection closed",
+												"Disconnected; connection closed gracefully by client."),
+						YCGETS_CONNERR => Array("ERROR", "connection error",
+												"Error or timeout in connection; disconnected"),
+						YCGETS_UNK => Array("UNKERR", "unknown error",
+												"Unknown error or exception has occurred.")
+					);
+
+	private $hostname;
+	private $port;
+	private $auth;
+	private $rpath_init;
+	private $status;
+	private $shand;
+	private $cstat;
+	private $pubkey_path;
+
+	/**************************************************************************
+	 * Connection and session setup/handling using the libssh2 module in PHP.
+	 * All of these functions utilize the state of the current object/class
+	 * instance.
+	 * Ported over from the ycget script and adapted into a class
+	 **************************************************************************/
+
+	private function ssh2_genpubkey($pkname) {
+		// generate random filename in temp dir
+		$xfnout = tempnam("/tmp","ycpubk");
+
+		// run ssh-keygen to create public key from private key
+		yc_exec('/usr/bin/ssh-keygen',array('-f',realpath($pkname),'-y'),$xox);
+		if(file_put_contents($xfnout, $xox)) {
+			zlogthis("Pubkey generated and written successfully [$xfnout]",LL_VERBOSE);
+		} else {
+			zlogthis("Pubkey generation or file creation failed! [destination file = $xfnout]",LL_ERROR);
+			return false;
+		}
+
+		chmod($xfnout, 0600);
+
+		$this->pubkey_path = $xfnout;
+
+		return true;
+	}
+
+
+	private function add_server($xhost,$xauth,$xpath="/",$xport=22) {
+		if(is_array($xauth)) {
+			if(isset($xauth['type']) && $xauth['type'] == "agent") {
+				$aauth = Array('type' => "agent", 'user' => $xauth['user']);
+			} else if(isset($xauth['type']) && $xauth['type'] == "password") {
+				$aauth = Array('type' => "password", 'user' => $xauth['user'], 'pass' => $xauth['pass']);
+			} else if(isset($xauth['type']) && $xauth['type'] == "pubkey") {
+				$aapriv = realpath($xauth['key']);
+				$aapub = $this->ssh2_genpubkey($aapriv);
+				$aauth = Array('type' => "pubkey", 'user' => $xauth['user'], 'pub' => $aapub, 'priv' => $aapriv);
+			} else if(!isset($xauth['type']) && isset($xauth['user']) && isset($xauth['pass'])) {
+				$aauth = Array('type' => "password", 'user' => $xauth['user'], 'pass' => $xauth['pass']);
+			}
+		} else if(is_string($xauth)) {
+			list($aauser,$aapass) = explode(":",$xauth);
+			$aauth = Array('type' => "password", 'user' => $aauser, 'pass' => $aapass);
+			unset($aauser); unset($aapass);
+		} else {
+			zlogthis("Failed to parse xauth parameter. Invalid format. Should be associative array or \"user:pass\" colon-delimited string.",LL_ERROR);
+			return false;
+		}
+
+		zlogthis("Successfully added host!\n".
+				ANSI_WHT."\tHostname ".ANSI_YEL.$xhost."\n".
+				ANSI_WHT."\tPort     ".ANSI_YEL.$xport."\n".
+				ANSI_WHT."\tRPath    ".ANSI_YEL.$xpath."\n".
+				ANSI_WHT."\tUser     ".ANSI_YEL.$aauth['user']."\n".
+				ANSI_WHT."\tAuth     ".ANSI_YEL.$aauth['type']."\n".ANSI_OFF.
+				(($aauth['type'] == 'pub') ? ANSI_WHT."\tIdentity ".ANSI_YEL.$aauth['priv']."\n" : ""),
+				LL_DEBUG);
+
+		$this->hostname = $xhost;
+		$this->port = $xport;
+		$this->auth = $aauth;
+		$this->rpath_init = $xpath;
+		$this->status = 'disconnected';
+		$this->shand = NULL;
+
+		return true;
+	}
+
+	private function ycc_ssh2_connect() {
+
+		// Establish connection to target remote host
+		// TODO: Callback function is called statically, afaik-- therefore, the callee will have no context
+		// as to the current state of the connection. fix this later somehow
+		if(($this->shand = ssh2_connect($this->hostname,$this->port,NULL,Array('disconnect' => 'ycConnect::ycc_ssh2cb_disconnect'))) === false) {
+			zlogthis(ANSI_RED."Connection failed!".ANSI_OFF." [hostname = ".ANSI_YEL.$this->hostname.ANSI_OFF.", port = ".ANSI_BLU.$this->port.ANSI_OFF."]",LL_ERROR);
+			$this->status = 'error/connect_fail';
+			return false;
+		} else {
+			zlogthis("Connection established to ".ANSI_YEL.$this->hostname.ANSI_OFF.":".ANSI_BLU.$this->port.ANSI_OFF." OK",LL_INFO);
+			$this->status = 'connected';
+		}
+
+
+		// Grab the hostkey fingerprint
+		$this->session['hostkey'] = ssh2_fingerprint($this->shand, SSH2_FINGERPRINT_MD5 | SSH2_FINGERPRINT_HEX);
+
+		// If known_hostkey is set, do a comparison -- throw a warning if mismatch
+		if(isset($this->known_hostkey) && $this->known_hostkey) {
+			if(strconform($this->known_hostkey) != strconform($this->session['hostkey'])) {
+				zlogthis("*** SECURITY WARNING *** : HOST KEY MISMATCH!",LL_WARNING);
+				logthis("\tExpected [".$this->known_hostkey."]\n",LL_WARNING);
+				logthis("\tReceived [".$this->session['hostkey']."]\n",LL_WARNING);
+				$this->session['host_match'] = false;
+			} else {
+				$this->session['host_match'] = true;
+			}
+		}
+
+		// Authenticate
+		$atype = $this->auth['type'];
+		if($atype == "agent") {
+			$a_ok = ssh2_auth_agent($this->shand,$this->auth['user']);
+		} else if($atype == "pubkey") {
+			$a_ok = ssh2_auth_pubkey_file($this->shand, $this->auth['user'], $this->auth['pub'], $this->auth['priv']);
+		} else if($atype == "password") {
+			$a_ok = ssh2_auth_password($this->shand, $this->auth['user'], $this->auth['pass']);
+		} else {
+			zlogthis("Incorrect authentication type set. [auth.type = $atype]",LL_ERROR);
+			$a_ok = false;
+		}
+
+		// Mask & clear the password, if used
+		if(isset($this->auth['pass'])) {
+			$this->auth['pass'] = "@@@@@@@@@@@@@@@@@@@";
+			unset($this->auth['pass']);
+		}
+
+		// Check to see if auth was successful
+		if($a_ok) {
+			zlogthis("Authentication successful! ^_^ [type = $atype, user = ".$this->auth['user']."]",LL_INFO);
+			$this->status = 'connected/auth_ok';
+			return true;
+		} else {
+			zlogthis("Authentication FAILED! ;_; [type = $atype, user = ".$this->auth['user']."]",LL_ERROR);
+			$this->status = 'error/auth_fail';
+			return false;
+		}
+	}
+
+	// callback function for ssh2_connect() when a disconnection occurs
+	static public function ycc_ssh2cb_disconnect($reason, $message, $language) {
+		zlogthis("** Disconnected: $reason -- $message [$language]\n",LL_NOTICE);
+	}
+
+
+	private function ycc_ssh2_disconnect(&$rtarget) {
+		if($this->status == 'connected/auth_ok') {
+			$this->status == 'closing';
+			ssh2_exec($this->shand,"exit");
+		}
+
+		if($this->auth['type'] == "pubkey") {
+			if(file_exists($this->auth['pub'])) {
+				if(unlink($this->auth['pub'])) {
+					zlogthis("Autogen pubkey removed successfully [".$this->auth['pub']."]\n",LL_DEBUG);
+				} else {
+					zlogthis("Autogen pubkey could not be removed. [".$this->auth['pub']."]\n",LL_WARNING);
+				}
+			}
+		}
+	}
+
+	public function ssh_pwd(&$rtarget) {
+		$sstream = ssh2_exec($rtarget[shand],"pwd");
+		$xpwd = trim(stream_get_contents($sstream));
+		return $xpwd;
+	}
+
+	public function ycget_cd_ssh(&$rtarget,$xdir="~") {
+		$xdir = trim($xdir);
+		if($xdir == "~" || $xdir == "") $cd_cmd = "cd";
+		else $cd_cmd = "cd '$xdir'";
+
+		$sstream = ssh2_exec($rtarget[shand],$cd_cmd);
+		$estream = ssh2_fetch_stream($sstream, SSH2_STREAM_STDERR);
+		$errout = trim(stream_get_contents($estream));
+		if(strlen($errout) > 1) {
+			$rtarget['last_error'] = Array('cmd' => $cd_cmd, 'err' => $errout, 'time' => microtime(true), 'func' => __FUNCTION__);
+			return false;
+		} else {
+			$rtarget['pwd'] = ycget_pwd_ssh($rtarget);
+			return true;
+		}
+	}
+
+	public function ycget_dstat_ssh(&$rtarget,$xpath=".") {
+
+		$xstat = '\stat -c \'"%n": {"chmod": "%a","type":"%F","size":"%s","owner": [%u,"%U"], "group": [%g,"%G"],"mtime": %Y},\' *';
+
+		$xpath = trim($xpath);
+
+		if($xpath == "." || $xpath == "" || $xpath == "./") {
+			$xglob = "*";
+		} else if($xpath[strlen($xpath)-1] != '/') {
+			$xpath .= "/*";
+		} else {
+			$xpath .= "*";
+		}
+
+		$stat_cmd = "$xstat $xglob";
+		zlogthis("executing on remote -- `$stat_cmd`",LL_DEBUG);
+
+		// execute stat cmd, then get the stdout & stderr stream contents
+		$sstream = ssh2_exec($rtarget[shand],$stat_cmd);
+		$estream = ssh2_fetch_stream($sstream, SSH2_STREAM_STDERR);
+		$errout = stream_get_contents($estream);
+		$rawstat = stream_get_contents($sstream);
+
+		// check to see if it failed (size of stderr contents will be nonzero)
+		if(strlen($errout) > 1) {
+			$rtarget['last_error'] = Array('cmd' => $cd_cmd, 'err' => $errout, 'time' => microtime(true), 'func' => __FUNCTION__);
+			return false;
+		} else {
+			$rtarget['pwd'] = ycget_pwd_ssh($rtarget);
+			return true;
+		}
+
+		// build valid JSON object array, then decode it
+		$jstat = "{ ".substr(trim($rawstat),0,-1)." }";
+		$dstat = json_decode($jstat);
+
+		zlogthis("** jstat = \"$jstat\"",LL_DEBUG);
+		zlogthis("** dstat = \n".print_r($dstat,true),LL_DEBUG);
+
+		return $dstat;
+	}
+
+	function ycsh_exec(&$rtarget,$xcmdr) {
+		$ptyset =	Array(
+						'pty'		=> "ansi",
+						'env'		=> Array(
+												'YCSH_VERSION' => YCSH_VERSION,
+												'YCSH_CHOST' => gethostname(),
+												'YCSH_CUSER' => getenv('USER')
+											),
+						'width'		=> 120,
+						'height'	=> 25
+					);
+
+		// execute cmd, then get the stdout & stderr stream contents
+		zlogthis("<< ssh2_exec() : `$xcmdr` [size = $sz_es]", LL_DEBUG);
+		$sstream = ssh2_exec($rtarget[shand], $xcmdr, $ptyset['pty'], $ptyset['env'], $ptyset['width'], $ptyset['height']);
+		stream_set_blocking($sstream, true);
+		$estream = ssh2_fetch_stream($sstream, SSH2_STREAM_STDERR);
+		$erroutx = stream_get_contents($estream);
+		$stdoutx = stream_get_contents($sstream);
+		$sz_es = strlen($erroutx);
+		$sz_so = strlen($stdoutx);
+
+		zlogthis(">> stderr [size = $sz_es] :\n$erroutx\n\n", LL_DEBUG);
+		zlogthis(">> stdout [size = $sz_so] :\n$stdoutx\n\n", LL_DEBUG);
+
+		return $stdoutx;
+	}
+
+	static public function __construct(&$context) {
+		$this->cstat = YCGETS_NR;
+		zlogthis("new ycConnect instance created.", LL_DEBUG);
+		zlogthis("Registering callbacks...", LL_DEBUG);
+
+		$context->command_register('connect', Array("userhost"), "Connect to remote host", $this->connect } );
+		$context->command_register('disconnect', Array(), "Disconnect from remote host", $this->disconnect } );
+
+		zlogthis("Adding test server. FIXME ***************** <<< ", LL_DEBUG);
+		$this->add_server("minorin.ycnrg.org",Array('type' => "pubkey", 'user' => "jacob", 'key' => "/home/jacob/.ssh/ycnrg-minorin-jacob"));
+
+	}
+
+	static public function connect(&$context,$args) {
+
+		$this->connect_ssh($minorin);
+
+		/*
+		ycsh_exec($minorin,"/bin/touch /home/jacob/yappa-".time());
+		ycsh_exec($minorin,"/bin/df");
+		ycsh_exec($minorin,"/usr/bin/uptime");
+		*/
+
+
+	}
+
+	static public function disconnect(&$connect,$args) {
+		ycget_disconnect_ssh($minorin);
+	}
+
+
+}
+
+
+
+$user_rc_path = "./ycsuperc.json"; // FIXME <<<<<<<<<<<<<<<<<<<<
+
+yc_showinfo();
+
+$status = new ycSuperCP();
+ycSuperCPBase::init($status);
+$xprompt = new ycSuperPrompt($status);
+
+$status->config_parse_ff();
+//$status->command_list();
+$xprompt->ploop();
+
+
+
+
+?>
