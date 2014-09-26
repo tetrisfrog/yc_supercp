@@ -1,0 +1,123 @@
+#!/usr/bin/php
+<?php
+
+// Define pow2 values for filesizes
+define('YCSZ_KiB', (float)1024.0);
+define('YCSZ_MiB', (float)1048576.0);
+define('YCSZ_GiB', (float)1073741824.0);
+define('YCSZ_TiB', (float)1099511627776.0);
+define('YC_FMZ_GIGAMAX', 1);
+
+function yc_fmt_fsize($fsintx,$xflags=0) {
+
+	$fsint = intval($fsintx);
+
+	//printf("\n\t\t[[%d]]\n",$fsint);
+
+	if($fsint < 1024) {
+		// bytes
+		$outs = sprintf("%01d B",$fsint);
+	} else if($fsint < YCSZ_MiB) {
+		// kilobytes
+		$outs = sprintf("%01.01f KB",(float)$fsint / YCSZ_KiB);
+	} else if($fsint < YCSZ_GiB) {
+		// megabytes
+		$outs = sprintf("%01.01f MB",(float)$fsint / YCSZ_MiB);
+	} else if($fsint < YCSZ_TiB || ($xflags & YC_FMZ_GIGAMAX)) {
+		// gigabytes
+		$outs = sprintf("%01.02f GB",(float)$fsint / YCSZ_GiB);
+	} else {
+		// terabytes
+		$outs = sprintf("%01.03f TB",(float)$fsint / YCSZ_TiB);
+	}
+
+	return $outs;
+}
+
+
+function iface_getstats($iface) {
+	$txbase = "/sys/class/net/$iface/statistics/tx_";
+	$rxbase = "/sys/class/net/$iface/statistics/rx_";
+
+	$xstat['tx']['bytes'] = file_get_contents($txbase."bytes");
+	$xstat['rx']['bytes'] = file_get_contents($rxbase."bytes");
+
+	$xstat['tx']['packets'] = file_get_contents($txbase."packets");
+	$xstat['rx']['packets'] = file_get_contents($rxbase."packets");
+
+}
+
+// `ip addr` output parsing regex
+// a beast, she is
+$iprgx = '/^(?<ifnum>[0-9]{1,3}):\s*(?<ifname>[a-zA-Z0-9:\-_]{2,}):\s*(\<(?<iflags>[^\>]+)\>)?\s*(?<iparams>mtu (?<mtu>[0-9]+)[^\n\r]+?state (?<ifstate>[a-zA-Z0-9\-:]+)[^\n\r]*)\s+link\/(?<linktype>[a-zA-Z:\-_]+)\s*(?<hmac>[a-fA-F0-9:]{5,18})\s*brd\s*(?<bmac>[a-fA-F0-9:]{5,18})\s*inet\s*(?<inet_addr>(?<ipv4_addr>[0-9\.]{7,16})(\/(?<ipv4_cidr>[0-9]{1,3}))?)\s*(brd\s*(?<ipv4_bcast>[0-9\.]{7,16})\s*)?scope\s*(?<ipv4_scope>[a-zA-Z0-9:\-_]+)(?<ipv4_misc>[^\n\r]*)\s*((?<ipv4_flags>[^\n\r]+)\s*)inet6\s*(?<inet6_addr>(?<ipv6_addr>[0-9a-fA-F:]+)(\/(?<ipv6_cidr>[0-9]{1,3}))?)\s*scope\s*(?<ipv6_scope>[a-zA-Z0-9:\-_]+)(?<ipv6_misc>[^\n\r]*)\s*(?<ipv6_flags>[^\n\r]+)$/ims';
+
+
+// our array to hold the datas
+$kimi = Array();
+
+// hostname
+$kimi['hostname'] = gethostname();
+
+// net
+$ipcmd = '/bin/ip addr';
+$ipout = shell_exec($ipcmd);
+
+preg_match_all($iprgx,$ipout,$matchbox, PREG_SET_ORDER);
+
+foreach($matchbox as $mtxi => $ttif) {
+	// skip loopback
+	if($ttif['ifname'] == 'lo') continue;
+
+	$kimi['net'][$ttif['ifname']] = Array();
+	$tify =& $kimi['net'][$ttif['ifname']];
+	$tify['ipv4']['addr'] = $ttif['ipv4_addr'];
+	$tify['ipv4']['cidr'] = $ttif['ipv4_cidr'];
+	$tify['ipv4']['bcast'] = $ttif['ipv4_bcast'];
+	$tify['ipv4']['scope'] = $ttif['ipv4_scope'];
+
+	$tify['ipv6']['addr'] = $ttif['ipv6_addr'];
+	$tify['ipv6']['cidr'] = $ttif['ipv6_cidr'];
+	$tify['ipv6']['bcast'] = $ttif['ipv6_bcast'];
+	$tify['ipv6']['scope'] = $ttif['ipv6_scope'];
+
+	$tify['hmac'] = $ttif['hmac'];
+	$tify['params'] = $ttif['iparams'];
+}
+
+
+/*
+
+(?<hmac>[a-fA-F0-9:]{5,18})
+(?<inet_addr>(?<ipv4_addr>[0-9\.]{7,16})(\/(?<ipv4_cidr>[0-9]{1,3}))?)
+
+^(?<ifname>[a-zA-Z0-9:\-_]+)\s*(?:.+?)HWaddr (?<macaddr>[0-9a-fA-Z:]{5,18})\s+inet addr:\s*(?<ipv4_addr>[0-9\.]{7,16})\s+Bcast:\s*(?<ipv4_bcast>[0-9\.]{7,16})\s+Mask:\s*(?<ipv4_mask>[0-9\.]{7,16})\s+inet6 addr:
+
+			"net": {
+				"eth0": {
+					"ipv4": "107.170.102.79",
+					"scope": "public",
+					"netid": "internet"
+				},
+				"eth1": {
+					"ipv4": "10.128.169.77",
+					"scope": "private",
+					"netid": "nyc2-do-ycnrg"
+				}
+			},
+
+			"platform": {
+				"os": "Linux",
+				"kernel": "3.8.0-29-generic",
+				"arch": "x86_64",
+				"distro": {
+					"name": "Ubuntu",
+					"release": "12.04 LTS",
+					"version": "12.04.4",
+					"codename": "precise"
+				},
+				"virt": "KVM"
+			},
+
+*/
+
+?>

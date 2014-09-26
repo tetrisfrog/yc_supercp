@@ -29,9 +29,7 @@
  *****************************************************************************/
 
 
-//error_reporting(E_ERROR | E_WARNING);
-error_reporting(E_ALL);
-
+error_reporting(E_ERROR | E_WARNING);
 
 define('SUPERCP_UPDATED',	"20 Sep 2014");
 define('SUPERCP_REV',		"r1");
@@ -54,9 +52,13 @@ define('LL_DEBUG',		9);
 $loglvl_strtab = Array(0 => "error", 1 => "warning", 2 => "prompt",
 					   3 => "notice", 4 => "info", 5 => "moreinfo",
 					   6 => "verbose", 9 => "debug");
+$loglvl_enum   = Array("silent" => -1, "error" => 0, "warning" => 1,
+					   "prompt" => 2, "notice" => 3, "info" => 4,
+					   "moreinfo" => 5, "verbose" => 6, "debug" => 9);
+
 
 // Default verbosity level
-$verbose_level = LL_DEBUG; // (0 = Errors only, 9 = Everything) See above
+$GLOBALS['ycsc_opts']['loglevel'] = LL_INFO; // (0 = Errors only, 9 = Everything) See above
 
 // Set default path
 $user_rc_path = USERRC_PATH;
@@ -72,22 +74,29 @@ function ycgdref($cn,&$cr) {
 }
 
 function logthis($instr,$level=LL_INFO) {
-	global $verbose_level;
-	if($level <= $verbose_level) echo $instr;
+	if($level <= $GLOBALS['ycsc_opts']['loglevel']) echo $instr;
 }
 
 function zlogthis($instr,$level=LL_INFO) {
-	global $verbose_level;
 	global $loglvl_strtab;
-	if($level <= $verbose_level) {
+	if($level <= $GLOBALS['ycsc_opts']['loglevel']) {
 		$dtracer = debug_backtrace();
 		$dcaller = $dtracer[1];
 		if(isset($dcaller['class'])) {
-			$xcontext = $dcaller['class'].$dcaller['type'].$dcaller['function'];
+ 				$xcontext = $dcaller['class'].$dcaller['type'].$dcaller['function'];
 		} else {
 			$xcontext = $dcaller['function'];
 		}
-		printf("[".ANSI_GRN."%s".ANSI_OFF." @ ".ANSI_GRN."line %d".ANSI_OFF."] <".ANSI_RED."%s".ANSI_OFF."> %s\n",$xcontext,$dcaller['line'],$loglvl_strtab[$level], $instr);
+
+		if($GLOBALS['ycsc_opts']['loglevel'] > LL_INFO) {
+			$linenum = " @ ".ANSI_GRN."line ".$dcaller['line'].ANSI_OFF;
+			$linelvl = "<".ANSI_RED.$loglvl_strtab[$level].ANSI_OFF."> ";
+		} else {
+			$linenum = "";
+			$linelvl = "";
+		}
+
+		@printf("[".ANSI_GRN."%s".ANSI_OFF."%s] %s%s\n",$xcontext,$linenum,$linelvl,$instr);
 	}
 }
 
@@ -116,6 +125,7 @@ define('YCFIG_CENTER',	1);
 function format_figlet($figtree,$leading=0,$flags=0) {
 	$center = ($flags & YCFIG_CENTER);
 
+	$rebt = "";
 	foreach($figtree as $fi => $flimb) {
 		if($center) $rebt .= str_pad($flimb,$leading," ",STR_PAD_BOTH)."\n";
 		else $rebt .= str_pad("",$leading," ").$flimb."\n";
@@ -341,6 +351,52 @@ function yc_snmpwalk($target,$cstring,$base_oid="",$version="2c") {
 }
 
 
+function ycsp_parse_opts() {
+	$optlist = Array(
+						'loglevel' => Array(
+											's' => Array('L:'), 'l' => Array('loglevel:'),
+											'type' => 'enum', 'default' => LL_INFO,
+											'enum' => $GLOBALS['loglvl_enum']
+											)
+					);
+
+	// build short/long option fields
+	foreach($optlist as $oval => $opx) {
+		$shorts = "";
+		$longs = Array();
+		foreach($opx['s'] as $tss) $shorts .= $tss;
+		foreach($opx['l'] as $lss) $longs[] = $lss;
+		$xopts = getopt($shorts,$longs);
+		$acout = count($xopts);
+		if($acout >= 1) {
+			$uopt = array_shift($xopts);
+			if($acout > 1) zlogthis("multiple arguments for same option, using first value specified.",LL_ERROR);
+
+			if($opx['type'] == "bool") {
+				$xargval = true;
+			} else if($opx['type'] == "list") {
+				$xargval = explode((isset($opx['delim']) ? $opx['delim'] : ","),$uopt);
+			} else if($opx['type'] == "enum") {
+				$xekey = strtolower($uopt);
+				if(isset($opx['enum'][$xekey])) {
+					$xargval = $opx['enum'][$xekey];
+				} else {
+					zlogthis("$oval: invalid enum value ".ANSI_RED.$xekey.ANSI_OFF."... using default", LL_ERROR);
+					$xargval = $opx['default'];
+				}
+			} else {
+				$xargval = $uopt;
+			}
+
+			zlogthis("getopt(): set ".ANSI_YEL.$oval.ANSI_OFF." = ".ANSI_CYN.$xargval.ANSI_OFF, LL_DEBUG);
+			$GLOBALS['ycsc_opts'][$oval] = $xargval;
+		} else {
+			$GLOBALS['ycsc_opts'][$oval] = $opx['default'];
+		}
+	}
+
+}
+
 ////////
 
 
@@ -410,7 +466,7 @@ class ycSuperCP {
 		return true;
 	}
 
-	public function command_register($cmdname, $params, $help, $callback, $flags=0) {
+	public function command_register($cmdname, $params, $xdesc, $callback, $flags=0) {
 		if(!is_array($params)) {
 			zlogthis("\$params argument is not an array. Setting to zero-size array.",LL_WARNING);
 			$params = Array();
@@ -422,6 +478,7 @@ class ycSuperCP {
 		$cdxn = Array(
 					'cmd' => $cmdname,
 					'params' => $params,
+					'desc' => $xdesc,
 					'callback' => $callback,
 					'flags' => $flags
 				);
@@ -430,7 +487,7 @@ class ycSuperCP {
 		zlogthis("New command added OK!\n".
 				 "\t".ANSI_WHT."cmdname".ANSI_OFF.": ".ANSI_YEL."$cmdname".ANSI_OFF."  ".
 				 "  ".ANSI_WHT."flags".ANSI_OFF.": ".ANSI_YEL."$flags".ANSI_OFF."\n".
-				 "\t".ANSI_WHT."help".ANSI_OFF.": ".ANSI_YEL."".trim($help)."".ANSI_OFF."\n"
+				 "\t".ANSI_WHT."desc".ANSI_OFF.": ".ANSI_YEL."".trim($xdesc)."".ANSI_OFF."\n"
 				 ,LL_DEBUG);
 
 		return true;
@@ -452,13 +509,13 @@ class ycSuperCP {
 	public function register_handler(&$hhand, $nsname, $hstat=0, $flags=0) {
 		$hclass = get_class($hhand);
 		zlogthis("registering handler: ".ANSI_GRN.$nsname.ANSI_OFF." --> ".ANSI_CYN.$hclass.ANSI_OFF, LL_DEBUG);
-		if(isset($hdex[$nsname])) {
-			zlogthis(ANSI_RED."Handler for this namespace already registered".ANSI_OFF." by ".ANSI_MAG.$hdex[$nsname]['class'].ANSI_OFF, LL_WARNING);
+		if(isset($this->hdex[$nsname])) {
+			zlogthis(ANSI_RED."Handler for this namespace already registered".ANSI_OFF." by ".ANSI_MAG.$this->hdex[$nsname]['class'].ANSI_OFF, LL_WARNING);
 			zlogthis("Previous handler will be overridden with new one.", LL_WARNING);
-			unset($hdex[$nsname]);
+			unset($this->hdex[$nsname]);
 		}
 
-		$hdex[$nsname] = Array(
+		$this->hdex[$nsname] = Array(
 								'class' => $hclass,
 								'obj' => $hhand,
 								'status' => $hstat
@@ -468,15 +525,24 @@ class ycSuperCP {
 	public function unregister_handler(&$hhand, $nsname) {
 		$hclass = get_class($hhand);
 		zlogthis("Unregistering handler: ".ANSI_GRN.$nsname.ANSI_OFF." --> ".ANSI_CYN.$hclass.ANSI_OFF, LL_DEBUG);
-		if(isset($hdex[$nsname])) {
-			if($hdex[$nsname]['class'] == $hclass) {
-				unset($hdex[$nsname]);
+		if(isset($this->hdex[$nsname])) {
+			if($this->hdex[$nsname]['class'] == $hclass) {
+				unset($this->hdex[$nsname]);
 				zlogthis("Deregistered successfully", LL_DEBUG);
 			}
 		} else {
 			zlogthis("Was not registered. Nothing done.", LL_DEBUG);
 		}
 
+	}
+
+	public function get_handler($nsname) {
+		if(isset($this->hdex[$nsname])) {
+			return $this->hdex[$nsname]['obj'];
+		} else {
+			zlogthis("handler '$nsname' not set!",LL_WARNING);
+			return false;
+		}
 	}
 
 	public function command_list() {
@@ -488,8 +554,15 @@ class ycSuperCP {
 		$this->run = true;
 		$this->command_register('quit', Array(), "Terminates any active processes or connections and exits.", function(&$context,$args) { exit(0); } );
 		$this->command_register('info', Array(), "Show program info", function(&$context,$args) { yc_showinfo(); } );
+		$this->command_register('clear', Array(), "Clear the screen", function(&$context,$args) { printf(ANSI_XCLEAR); } );
+		$this->command_register('help', Array(), "Show list of commands", function(&$context,$args) { printf("\n"); foreach($this->cdex as $xcname => $xcinfo) { printf(ANSI_CYN.$xcname.ANSI_OFF." - ".ANSI_WHT.$xcinfo['desc'].ANSI_OFF."\n"); } printf("\n"); } );
 	}
-
+	/*
+					'cmd' => $cmdname,
+					'params' => $params,
+					'callback' => $callback,
+					'flags' => $flags
+	*/
 	public function __destruct() {
 		zlogthis("ycSuperCP instance destroyed.", LL_DEBUG);
 	}
@@ -575,7 +648,36 @@ class ycSuperCPBase {
 
  	static public function init(&$context) {
 		$context->command_register('mxcheck', Array("dnsname"), "Show MX Information", function(&$context,$args) { self::mxcheck($context,$args); } );
+		$context->command_register('exec', Array("command"), "Execute remote command", function(&$context,$args) { self::rexec($context,$args); } );
+		$context->command_register('sexec', Array("command"), "Execute remote shell command", function(&$context,$args) { self::sexec($context,$args); } );
 	}
+
+	static public function rexec(&$context,$args) {
+
+		if(($xconn = $context->get_handler("connect")) === false) {
+			zlogthis("Not connected! Please connect to remote host first.",LL_ERROR);
+			return false;
+		}
+
+		$cout = $xconn->ycsh_exec(implode(" ",$args));
+		zlogthis("command returned:\n".ANSI_WHT.$cout.ANSI_OFF."\n",LL_INFO);
+
+		return true;
+	}
+
+	static public function sexec(&$context,$args) {
+
+		if(($xconn = $context->get_handler("connect")) === false) {
+			zlogthis("Not connected! Please connect to remote host first.",LL_ERROR);
+			return false;
+		}
+
+		$cout = $xconn->ycsh_sexec(implode(" ",$args));
+		zlogthis("command returned:\n".ANSI_WHT.$cout.ANSI_OFF."\n",LL_INFO);
+
+		return true;
+	}
+
 
 	static public function mxcheck(&$context,$args) {
 
@@ -643,7 +745,7 @@ class ycConnect {
 											"Disconnected; connection closed gracefully by client."),
 					YCGETS_DC => Array("CLOSE", "closing connection",
 											"A request to close the session has been initiated, but not completed."),
-					YCGETS_CONNERR => Array("ERROR", "connection error",
+					YCGETS_CONERR => Array("ERROR", "connection error",
 											"Error or timeout in connection; disconnected"),
 					YCGETS_AUTHFAIL => Array("AUTHFAIL", "authentication failed",
 											"Authentication failed while attempting to connect"),
@@ -658,6 +760,7 @@ class ycConnect {
 	private $status;
 	private $shand;
 	private $cstat;
+	private $sstream;
 
 	/**************************************************************************
 	 * Connection and session setup/handling using the libssh2 module in PHP.
@@ -728,6 +831,7 @@ class ycConnect {
 		$this->status = 'disconnected';
 		$this->cstat = YCGETS_NC;
 		$this->shand = NULL;
+		$this->sstream = NULL;
 
 		return true;
 	}
@@ -807,6 +911,14 @@ class ycConnect {
 			$this->cstat = YCGETS_AUTHFAIL;
 			return false;
 		}
+
+		// request interactive shell
+
+		/*
+		zlogthis("Connecting interactive shell...",LL_DEBUG);
+		$this->sstream = ssh2_shell($this->shand,'xterm',null,120,24,SSH2_TERM_UNIT_CHARS);
+		stream_set_blocking($this->sstream, true);
+		*/
 	}
 
 	// callback function for ssh2_connect() when a disconnection occurs
@@ -815,11 +927,14 @@ class ycConnect {
 	}
 
 
-	private function ycc_ssh2_disconnect(&$rtarget) {
+	private function ycc_ssh2_disconnect() {
 		if($this->status == 'connected/auth_ok' || $this->cstat == YCGETS_OK) {
 			$this->status = 'closing';
 			$this->cstat = YCGETS_CLOSE;
 			ssh2_exec($this->shand,"exit");
+			zlogthis("Disconnected from ".$this->hostname, LL_INFO);
+		} else {
+			zlogthis("Not connected.", LL_WARNING);
 		}
 
 		if($this->auth['type'] == "pubkey") {
@@ -898,21 +1013,24 @@ class ycConnect {
 		return $dstat;
 	}
 
-	function ycsh_exec(&$rtarget,$xcmdr) {
+	public function ycsh_exec($xcmdr) {
 		$ptyset =	Array(
 						'pty'		=> "ansi",
+						'env'		=> NULL,
+						/*
 						'env'		=> Array(
 												'YCSH_VERSION' => YCSH_VERSION,
 												'YCSH_CHOST' => gethostname(),
 												'YCSH_CUSER' => getenv('USER')
 											),
+						*/
 						'width'		=> 120,
 						'height'	=> 25
 					);
 
 		// execute cmd, then get the stdout & stderr stream contents
-		zlogthis("<< ssh2_exec() : `$xcmdr` [size = $sz_es]", LL_DEBUG);
-		$sstream = ssh2_exec($rtarget[shand], $xcmdr, $ptyset['pty'], $ptyset['env'], $ptyset['width'], $ptyset['height']);
+		zlogthis("sending shell command via ssh2_exec(): `".ANSI_GRN."$xcmdr".ANSI_OFF."`", LL_DEBUG);
+		$sstream = ssh2_exec($this->shand, $xcmdr, $ptyset['pty'], $ptyset['env'], $ptyset['width'], $ptyset['height']);
 		stream_set_blocking($sstream, true);
 		$estream = ssh2_fetch_stream($sstream, SSH2_STREAM_STDERR);
 		$erroutx = stream_get_contents($estream);
@@ -920,10 +1038,22 @@ class ycConnect {
 		$sz_es = strlen($erroutx);
 		$sz_so = strlen($stdoutx);
 
-		zlogthis(">> stderr [size = $sz_es] :\n$erroutx\n\n", LL_DEBUG);
-		zlogthis(">> stdout [size = $sz_so] :\n$stdoutx\n\n", LL_DEBUG);
-
 		return $stdoutx;
+	}
+
+	public function ycsh_sexec($xcmdr) {
+
+		zlogthis("sending shell command via ssh2_shell stream: `".ANSI_GRN."$xcmdr".ANSI_OFF."`", LL_DEBUG);
+		fwrite($this->sstream, $xcmdr."\n");
+		sleep(1);
+		$fullbuf = "";
+		while($buffy = fgets($this->sstream,4096)) {
+			flush();
+			printf($buffy);
+			$fullbuf .= $buffy;
+		}
+
+		return $fullbuf;
 	}
 
 	public function __construct(&$context) {
@@ -973,6 +1103,8 @@ class ycConnect {
 $user_rc_path = "./ycsuperc.json"; // FIXME <<<<<<<<<<<<<<<<<<<<
 
 yc_showinfo();
+
+ycsp_parse_opts();
 
 $status = new ycSuperCP();
 ycSuperCPBase::init($status);
