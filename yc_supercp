@@ -2,7 +2,7 @@
 <?php
 /**
  **%%YCDOC*********************************************************************
- **%%vim: set modelines=35:
+ **%%vim: set modelines=30:
  *
  * yc_supercp
  *
@@ -17,7 +17,7 @@
  * @package		neoretro\yellowcrescent
  * @subpackage	yc_supercp
  * @category	util,shell_util
- * @fullpkg		neoretro.ycnrg.supercp
+ * @fullpkg		neoretro.yellowcrescent.yc_supercp
  * @version		0.01.0
  * @author		Jacob Hipps - jacob@ycnrg.org
  * @copyright	Copyright (c) 2014 Jacob Hipps/Neo-Retro Group
@@ -25,6 +25,8 @@
  * @param 		vim: set ts=4 sw=4 noexpandtab syntax=php:
  *
  * @depends		php:curl,php:readline,pecl:ssh2,pecl:xattr,ssh-keygen,?rhash
+ *
+ * @link		https://yatogami.ycnrg.org/yccc/yc_supercp
  *
  *****************************************************************************/
 
@@ -496,8 +498,10 @@ class ycSuperCP {
 	public function command_invoke($cmdname,$args) {
 		if(isset($this->cdex[$cmdname])) {
 			if($this->cdex[$cmdname]['flags'] & YCSP_CREG_OBJTUP || $this->cdex[$cmdname]['flags'] & YCSP_CREG_STR || $this->cdex[$cmdname]['flags'] & YCSP_CREG_ARR) {
+				zlogthis("invoking via call_user_func_array()",LL_DEBUG);
 				return call_user_func_array($this->cdex[$cmdname]['callback'],Array(&$this,$args));
 			} else {
+				zlogthis("invoking directly via callable object",LL_DEBUG);
 				return $this->cdex[$cmdname]['callback']($this,$args);
 			}
 		} else {
@@ -1098,6 +1102,123 @@ class ycConnect {
 
 }
 
+class ycCMSCheck {
+	protected $dbcon;
+	protected $dbx = Array();
+	protected $tablist;
+
+	protected function db_connect() {
+		// connect to database; use params from $dbx prop array
+		if(!($this->dbcon = mysqli_connect($this->dbx['host'],$this->dbx['user'],$this->dbx['pass'],$this->dbx['dbname']))) {
+			zlogthis("Failed to connect to mySQL database. mySQL returned error ".mysqli_errno()." :\n\t".mysqli_error($wpdb_link).LL_ERROR);
+			return false;
+		}
+	}
+
+	protected function db_get_tablist() {
+		// get list of tables
+		$qq = "SHOW TABLES";
+		$qres = mysqli_query($this->dbcon,$qq);
+		while($qrow = mysqli_fetch_assoc($qres)) {
+			$tlist[] = $qrow['Tables_in_'.$this->dbx['dbname']];
+		}
+		mysqli_free_result($qres);
+
+		$this->tablist = $tlist;
+		return $tlist;
+	}
+
+	protected function db_compare_tabs($clist,$usePrefix=true) {
+		$tab_missing = 0;
+
+		if($usePrefix) $xprefix = $this->dbx['prefix'];
+		else $xprefix = "";
+
+		foreach($clist as $cctab) {
+			if(in_array($xprefix.$cctab,$this->tablist)) {
+				zlogthis($xprefix.$cctab." : Exists",LL_DEBUG);
+			} else {
+				zlogthis($xprefix.$cctab." : *TABLE MISSING*",LL_WARNING);
+				$tab_missing++;
+			}
+		}
+
+		return $tab_missing;
+	}
+}
+
+class ycWordpress extends ycCMSCheck {
+
+	private $hcontext;
+	private $wp_tabcheck = Array('commentmeta','comments','links','options',
+								 'postmeta','posts','term_relationships','term_taxonomy',
+								 'terms','users');
+
+	private function parse_config($infile="wp-config.php") {
+
+		$dregx = '/define\(\s*\'(?<defname>[A-Z0-9_]+)\'\s*,\s*\'(?<defval>[^\']+)\'\s*\);/mx';
+		$pfx_regx = '/\$table_prefix\s*=\s*[\'"](?<prefix>[^\'"]*)[\'"]/mx';
+
+		$wpconfig = file_get_contents($infile);
+		preg_match_all($dregx,$wpconfig,$xmatch,PREG_SET_ORDER);
+		preg_match($pfx_regx,$wpconfig,$pmatch);
+
+		$wpdefs = Array();
+		foreach($xmatch as $xtup) {
+			$wpdefs[$xtup['defname']] = $xtup['defval'];
+		}
+
+		$xinfo = Array('host' => $wpdef['DB_HOST'], 'dbname' => $wpdefs['DB_NAME'], 'user' => $wpdefs['DB_USER'], 'pass' => $wpdefs['DB_PASSWORD'], 'prefix' => $pmatch['prefix']);
+		$this->dbx = $xinfo;
+
+		return $xinfo;
+	}
+
+
+	public function wp_dbcheck() {
+		// get database info
+		zlogthis("Parsing wp-config.php", LL_INFO);
+		$wpdb = $this->parse_config();
+
+		// check database connectivity
+		$this->db_connect();
+
+		// populate list of tables
+		$this->db_get_tablist();
+
+		zlogthis("Table prefix: '".$wpdb['prefix']."'",LL_INFO);
+		$missing = $this->db_compare_tabs($this->wp_tabcheck);
+
+		if(!$missing) zlogthis("All core Wordpress tables are present. Check Passed.",LL_INFO);
+		else zlogthis("** WARNING: Missing $missing table(s). Either database is corrupt, empty, or table_prefix is incorrect!",LL_WARNING);
+
+		zlogthis("Verifying table integrity...", LL_INFO);
+		foreach($wp_tablist as $cctab) {
+			$qcstat = mysqli_query($this->dbcon,"CHECK TABLE ".$cctab);
+			$check_dat = mysqli_fetch_assoc($qcstat);
+			mysqli_free_result($qcstat);
+
+			//print_r($check_dat);
+		}
+
+		zlogthis("Tables in database:\n".print_r($this->tablist,true),LL_INFO);
+
+		return true;
+	}
+
+	public function __construct(&$context) {
+		zlogthis("new ycWordpress instance created.", LL_DEBUG);
+		zlogthis("Registering callbacks...", LL_DEBUG);
+
+		$context->command_register('wp_dbcheck', Array(), "Check database", Array($this, "wp_dbcheck"), YCSP_CREG_OBJTUP);
+		//$context->command_register('wp.', Array(), "Disconnect from remote host", Array($this, "disconnect"), YCSP_CREG_OBJTUP);
+
+	}
+
+	public function __destruct() {
+		zlogthis("ycWordpress instance destroyed", LL_DEBUG);
+	}
+}
 
 
 $user_rc_path = "./ycsuperc.json"; // FIXME <<<<<<<<<<<<<<<<<<<<
@@ -1110,6 +1231,7 @@ $status = new ycSuperCP();
 ycSuperCPBase::init($status);
 $xprompt = new ycSuperPrompt($status);
 $xcon = new ycConnect($status);
+$mod_wordpress = new ycWordpress($status);
 
 $status->config_parse_ff();
 //$status->command_list();
